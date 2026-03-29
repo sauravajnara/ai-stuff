@@ -5,8 +5,16 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
 @Service
 public class RagEvaluationService {
+
+    private static final Logger log = LoggerFactory.getLogger(RagEvaluationService.class);
 
     private final ChatLanguageModel chatModel;
 
@@ -14,7 +22,8 @@ public class RagEvaluationService {
         this.chatModel = chatModel;
     }
 
-    // Faithfulness: is the answer grounded in the context?
+    @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "faithfulnessFallback")
+    @Retry(name = "llmRetry")
     public double faithfulness(String answer, List<String> chunks) {
         String context = String.join("\n\n", chunks);
         String prompt = """
@@ -28,7 +37,8 @@ public class RagEvaluationService {
         return parseScore(chatModel.chat(prompt));
     }
 
-    // Answer Relevancy: does the answer address the question?
+    @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "answerRelevancyFallback")
+    @Retry(name = "llmRetry")
     public double answerRelevancy(String question, String answer) {
         String prompt = """
                 Given the question and answer below, rate how relevant the answer is to the question.
@@ -39,6 +49,16 @@ public class RagEvaluationService {
                 Answer: %s
                 """.formatted(question, answer);
         return parseScore(chatModel.chat(prompt));
+    }
+
+    public double faithfulnessFallback(String answer, List<String> chunks, Throwable t) {
+        log.warn("Faithfulness eval unavailable: {}", t.getMessage());
+        return 0.0;
+    }
+
+    public double answerRelevancyFallback(String question, String answer, Throwable t) {
+        log.warn("Relevancy eval unavailable: {}", t.getMessage());
+        return 0.0;
     }
 
     private double parseScore(String response) {
